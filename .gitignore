@@ -1,0 +1,5 @@
+.vscode/
+.vs/
+**/.vs/
+*.wav
+*.wav.reapeaks
