@@ -3,6 +3,7 @@ using PyCall
 using LinearAlgebra
 using Printf
 using WAV
+using DifferentialEquations
 @pyimport matplotlib.animation as anim
 pygui(true)
 
@@ -10,76 +11,104 @@ struct Str
     length::Float64
     c2::Float64
     tension::Float64
-    mpu::Float64
-    mpu_inv::Float64
+    σ::Float64
+    μ::Float64
+    μ_inv::Float64
 end
 
-Str(length::Float64, c::Float64, tension::Float64) = (
-    c2::Float64 = c ^ 2;
-    mpu::Float64 = tension / c2;
-    Str(length, c2, tension, mpu, 1. / mpu)
+Str(length::Float64, c::Float64, tension::Float64, σ::Float64, ) = (
+    c2::Float64 = c^2;
+    μ::Float64 = tension / c2;
+    Str(length, c2, tension, σ, μ, 1. / μ)
 )
+
+struct DragForce
+    ρ_air::Float64
+    C::Float64
+end
 
 mutable struct StrIntegrator
     t::Int
     str::Str
-    dt::Float64
-    dx::Float64
-    dx_inv::Float64
+    drag::DragForce
+    Δt::Float64
+    Δx::Float64
+    Δx_inv::Float64
     Nx::Int
-    yPrev::Array{Float64, 1}
+    yPrev::Array{Float64,1}
     r2::Float64
     twice1mr2::Float64
-    diffMat::Tridiagonal{Float64, Array{Float64,1}}
+    diffMat::Tridiagonal{Float64,Array{Float64,1}}
 end
 
-StrIntegrator(str::Str, dt::Real, dx::Real) = begin
-    Nx::Int = round(str.length / dx)
-    yPrev::Array{Float64, 1} = zeros(Nx)
-    r2::Float64 = str.c2 * dt^2. / (dx^2.)
+StrIntegrator(str::Str, drag::DragForce, Δt::Real, Δx::Real) = begin
+    Nx::Int = round(str.length / Δx)
+    yPrev::Array{Float64,1} = zeros(Nx)
+    r2::Float64 = str.c2 * Δt^2. / (Δx^2.)
     twice1mr2::Float64 = 2. * (1. - r2)
     twice2r::Float64 = 2. * r2
-    n_2r2s::Array{Float64, 1} = fill(r2, Nx - 2)
-    diag::Array{Float64, 1} = fill(twice1mr2, Nx)
+    n_2r2s::Array{Float64,1} = fill(r2, Nx - 2)
+    diag::Array{Float64,1} = fill(twice1mr2, Nx)
     diffMat = Tridiagonal([n_2r2s..., twice2r], diag, [twice2r, n_2r2s...])
-    StrIntegrator(0, str, dt, dx, 1. / dx, Nx, yPrev, r2, twice1mr2, diffMat)
+    StrIntegrator(0, str, drag, Δt, Δx, 1. / Δx, Nx, yPrev, r2, twice1mr2, diffMat)
 end
 
-Integrate!(si::StrIntegrator, yn, damping=false) = begin
+GetDragForce(df::DragForce, v2::Array{Float64,1}, σ::Float64, μ_inv::Float64) = begin
+    return -2 * v2 * df.C * df.ρ_air * σ * μ_inv
+end
+
+Integrate!(si::StrIntegrator, yn, damping = false) = begin
     if si.t == 0
         si.yPrev = copy(yn)
     end
     diff = yn - si.yPrev
-    square = diff .* abs.(diff)
-    yn1 = (si.diffMat * yn) - si.yPrev + square * -2. * 0.5 * 1.2 * .0009 * si.str.mpu_inv
+    v2 = diff .* abs.(diff)
+    yn1 = (si.diffMat * yn) - si.yPrev + GetDragForce(si.drag, v2, si.str.σ, si.str.μ_inv)
     yn1[1] = yn[1]
     yn1[end] = 0.
     si.t += 1
     si.yPrev = copy(yn)
-    force = si.str.tension * (yn1[2] - yn1[1]) * si.dx_inv
+    force = si.str.tension * (yn1[2] - yn1[1]) * si.Δx_inv
     if damping == true
-        yn1[1] = yn[1] + force * si.dt / 1000.
+        yn1[1] = yn[1] + force * si.Δt / 1000.
     else
         yn1[1] = yn[1]
     end
     return (yn1, force)
 end
 
-main(generate=false) = begin
-    c::Real = 220.
-    dt::Real = 1.0/44100.0
+main(generate = false) = begin
+    c::Real = 220.0
+    dt::Real = 1.0 / 44100.0u
     dx::Real = dt * c
     length::Real = 100 * dx
-    s::Str = Str(length, c, 70.)
+    s::Str = Str(length, c, 70., 0.0009)
+    df::DragForce = DragForce(1.2, 0.5)
     si::StrIntegrator = StrIntegrator(s, dt, dx)
 
     # yn::Array{Float64, 1} = [
     #     range(0., stop=0.005, length=Int(si.Nx * 0.15 + 1.))[1:end-1]...
     #     range(0.005, stop=0, length=Int(si.Nx * 0.85))...
     # ]
-    yn::Array{Float64, 1} = [0.0004 * sin((i - 1) * pi / (si.Nx - 1)) + 0.0002 * sin(5 * (i - 1) * pi / (si.Nx - 1)) for i = 1:si.Nx]
+    yn::Array{Float64,1} = [0.0004 * sin((i - 1) * pi / (si.Nx - 1)) + 0.0002 * sin(5 * (i - 1) * pi / (si.Nx - 1)) for i = 1:si.Nx]
 
-    x::Array{Float64, 1} = range(0, stop=s.length, length=si.Nx)
+    x::Array{Float64,1} = range(0, stop = s.length, length = si.Nx)
+
+    Nx::Int = round(s.length / dx)
+    c2_Δx = c^2 / dx^2
+    lu = fill(c2_Δx, Nx - 2)
+    Δ = Tridiagonal([lu..., 2 * c2_Δx], diag, [2 * c2_Δx, lu...])
+    f1(dv, v, u, p, t) = begin
+        v2 = v .* abs.(v)
+        drag = GetDragForce(df, v2, s.σ, s.μ_inv)
+        dv = Δ * u + drag
+    end
+
+    f2(du, v, u, p, t) = begin
+
+    end
+
+    dynODE = DynamicalODEProblem(f1, f2, v0, u0, tspan)
 
     global (fig, (ax1, ax2)) = subplots(2, 1)
     ax1[:set_ylim](-0.005, 0.005)
@@ -87,10 +116,10 @@ main(generate=false) = begin
     ax1[:set_title]("String Contour")
     ax1[:set_xlabel]("string shape (m)")
     ax1[:set_ylabel]("height offset (m)")
-    global time = ax1[:text](0.02, 0.8, "", transform=ax1[:transAxes])
+    global time = ax1[:text](0.02, 0.8, "", transform = ax1[:transAxes])
 
-    fx::Array{Float64, 1} = range(0, stop=1, length=1000)
-    fy::Array{Float64, 1} = fill(NaN, 1000)
+    fx::Array{Float64,1} = range(0, stop = 1, length = 1000)
+    fy::Array{Float64,1} = fill(NaN, 1000)
     global line2, = ax2[:plot](fx, fy)
     ax2[:set_title]("Force on bridge")
     ax2[:set_xlabel]("time (s)")
@@ -98,7 +127,7 @@ main(generate=false) = begin
     ax2[:set_ylim](-1.0, 1.0)
     ax2[:set_xlim](0.0, 1.0)
 
-    fig[:subplots_adjust](hspace=1.0)
+    fig[:subplots_adjust](hspace = 1.0)
 
     init() = begin
         global line1
@@ -133,15 +162,15 @@ main(generate=false) = begin
             (yn, f) = Integrate!(si, yn, true)
             out[i] = f
         end
-        wavwrite(out, "out.wav", Fs=44100)
+        wavwrite(out, "out.wav", Fs = 44100)
     end
 
     if generate == true
         generateWAV()
     else
-        anim.FuncAnimation(fig, animate, init_func=init, interval=2, blit=true, frames=100)
+        anim.FuncAnimation(fig, animate, init_func = init, interval = 2, blit = true, frames = 100)
         show()
     end
 end
 
-main(true)
+main(false)
