@@ -1,168 +1,160 @@
+module Waves
+
 using PyPlot
 using PyCall
 using LinearAlgebra
 using Printf
 using WAV
 using DifferentialEquations
+using RecursiveArrayTools
+using Distributions
+using FFTW
+using DSP
+using Juno
+
+include("StringObject.jl")
+include("Integrator.jl")
 @pyimport matplotlib.animation as anim
 pygui(true)
 
-struct Str
-    length::Float64
-    c2::Float64
-    tension::Float64
-    σ::Float64
-    μ::Float64
-    μ_inv::Float64
-end
-
-Str(length::Float64, c::Float64, tension::Float64, σ::Float64, ) = (
-    c2::Float64 = c^2;
-    μ::Float64 = tension / c2;
-    Str(length, c2, tension, σ, μ, 1. / μ)
-)
-
-struct DragForce
-    ρ_air::Float64
-    C::Float64
-end
-
-mutable struct StrIntegrator
-    t::Int
-    str::Str
-    drag::DragForce
-    Δt::Float64
-    Δx::Float64
-    Δx_inv::Float64
-    Nx::Int
-    yPrev::Array{Float64,1}
-    r2::Float64
-    twice1mr2::Float64
-    diffMat::Tridiagonal{Float64,Array{Float64,1}}
-end
-
-StrIntegrator(str::Str, drag::DragForce, Δt::Real, Δx::Real) = begin
-    Nx::Int = round(str.length / Δx)
-    yPrev::Array{Float64,1} = zeros(Nx)
-    r2::Float64 = str.c2 * Δt^2. / (Δx^2.)
-    twice1mr2::Float64 = 2. * (1. - r2)
-    twice2r::Float64 = 2. * r2
-    n_2r2s::Array{Float64,1} = fill(r2, Nx - 2)
-    diag::Array{Float64,1} = fill(twice1mr2, Nx)
-    diffMat = Tridiagonal([n_2r2s..., twice2r], diag, [twice2r, n_2r2s...])
-    StrIntegrator(0, str, drag, Δt, Δx, 1. / Δx, Nx, yPrev, r2, twice1mr2, diffMat)
-end
-
-GetDragForce(df::DragForce, v2::Array{Float64,1}, σ::Float64, μ_inv::Float64) = begin
-    return -2 * v2 * df.C * df.ρ_air * σ * μ_inv
-end
-
-Integrate!(si::StrIntegrator, yn, damping = false) = begin
-    if si.t == 0
-        si.yPrev = copy(yn)
-    end
-    diff = yn - si.yPrev
-    v2 = diff .* abs.(diff)
-    yn1 = (si.diffMat * yn) - si.yPrev + GetDragForce(si.drag, v2, si.str.σ, si.str.μ_inv)
-    yn1[1] = yn[1]
-    yn1[end] = 0.
-    si.t += 1
-    si.yPrev = copy(yn)
-    force = si.str.tension * (yn1[2] - yn1[1]) * si.Δx_inv
-    if damping == true
-        yn1[1] = yn[1] + force * si.Δt / 1000.
-    else
-        yn1[1] = yn[1]
-    end
-    return (yn1, force)
-end
-
 main(generate = false) = begin
-    c::Real = 220.0
-    dt::Real = 1.0 / 44100.0u
-    dx::Real = dt * c
-    length::Real = 100 * dx
-    s::Str = Str(length, c, 70., 0.0009)
+    FFTW.set_num_threads(4)
+
+    c::Float64 = 265.0
+    # fs::Float64 = 44100.0
+    length::Float64 = 0.65
+    Δx::Float64 = length / 500
+    Δt::Float64 = 0.5 * Δx / c
+    fs::Float64 = 1.0 / Δt
+    println(fs)
+    Z_bridge::Float64 = 1000.0
+    s::Str = Str(length, c, 700., 0.0009, Z_bridge)
     df::DragForce = DragForce(1.2, 0.5)
-    si::StrIntegrator = StrIntegrator(s, dt, dx)
+    si::StrIntegrator = StrIntegrator(s, df, Δt, Δx)
 
-    # yn::Array{Float64, 1} = [
-    #     range(0., stop=0.005, length=Int(si.Nx * 0.15 + 1.))[1:end-1]...
-    #     range(0.005, stop=0, length=Int(si.Nx * 0.85))...
-    # ]
-    yn::Array{Float64,1} = [0.0004 * sin((i - 1) * pi / (si.Nx - 1)) + 0.0002 * sin(5 * (i - 1) * pi / (si.Nx - 1)) for i = 1:si.Nx]
+    h::Hammer = Hammer(0.003, 0.01, 2.5, 5e9, 6.0 / 7.0 * s.length, -0.001, 2.0)
+    hi::HammerIntegrator = HammerIntegrator(0, h, Δt, 0.0)
 
-    x::Array{Float64,1} = range(0, stop = s.length, length = si.Nx)
+    # yⁿ::Array{Float64,1} = [0.0004 * sin((i - 1) * pi / (si.Nₓ - 1)) + 0.0002 * sin(5 * (i - 1) * pi / (si.Nₓ - 1)) for i = 1:si.Nₓ]
+    yⁿ = GeneratePluck(0.85, 0.001, si.Nₓ)
+    # yⁿ::Array{Float64,1} = zeros(si.Nₓ)
 
-    Nx::Int = round(s.length / dx)
-    c2_Δx = c^2 / dx^2
-    lu = fill(c2_Δx, Nx - 2)
-    Δ = Tridiagonal([lu..., 2 * c2_Δx], diag, [2 * c2_Δx, lu...])
-    f1(dv, v, u, p, t) = begin
-        v2 = v .* abs.(v)
-        drag = GetDragForce(df, v2, s.σ, s.μ_inv)
-        dv = Δ * u + drag
-    end
+    stdev::Float64 = h.width / (2 * √(2 * log(2)))
+    println(stdev)
+    dist = Normal(h.x, stdev)
+    # dist = Uniform(h.x - 0.005, h.x + 0.005)
 
-    f2(du, v, u, p, t) = begin
+    x::Array{Float64,1} = range(0, stop = s.length, length = si.Nₓ)
+    scale = pdf(dist, h.x)
+    hammer_display = [0.01 * (pdf(dist, i) / scale - 1.0) for i in x]
+    hammer = [pdf(dist, i) / scale for i in x]
 
-    end
-
-    dynODE = DynamicalODEProblem(f1, f2, v0, u0, tspan)
-
-    global (fig, (ax1, ax2)) = subplots(2, 1)
+    global (fig, (ax1, ax2, ax3)) = subplots(3, 1, figsize=(8, 10))
     ax1[:set_ylim](-0.005, 0.005)
-    global line1, = ax1[:plot](x, yn)
+    global line1, lineHammer = ax1[:plot](x, yⁿ, "k-", x, hammer_display, "-")
     ax1[:set_title]("String Contour")
     ax1[:set_xlabel]("string shape (m)")
     ax1[:set_ylabel]("height offset (m)")
     global time = ax1[:text](0.02, 0.8, "", transform = ax1[:transAxes])
 
-    fx::Array{Float64,1} = range(0, stop = 1, length = 1000)
-    fy::Array{Float64,1} = fill(NaN, 1000)
-    global line2, = ax2[:plot](fx, fy)
+    forceSize::Int64 = 8192
+
+    Fx::Array{Float64,1} = range(0, stop = forceSize / fs, length = forceSize)
+    Fy::Array{Float64,1} = fill(NaN, forceSize)
+    global line2, = ax2[:plot](Fx, Fy)
     ax2[:set_title]("Force on bridge")
     ax2[:set_xlabel]("time (s)")
     ax2[:set_ylabel]("force (N)")
-    ax2[:set_ylim](-1.0, 1.0)
-    ax2[:set_xlim](0.0, 1.0)
+    ax2[:set_ylim](-25.0, 25.0)
+    ax2[:set_xlim](0.0, forceSize / fs)
+
+    fftInSize::Int64 = 16384
+    fftOutSize::Int64 = 8193
+
+    global timeDomain = fill(0.0, fftInSize)
+    fftPlan = FFTW.plan_rfft(timeDomain, flags=FFTW.UNALIGNED)
+
+    FreqX::Array{Float64,1} = range(0, stop = fs / 2.0, length = fftOutSize)
+    FreqY::Array{Float64,1} = fftPlan * timeDomain
+    global line3, = ax3[:loglog](FreqX, FreqY)
+    ax3[:set_title]("Frequency Spectrum")
+    ax3[:set_xlabel]("Frequency (hz)")
+    ax3[:set_ylabel]("Magnitude")
+    ax3[:set_xlim](100, fs / 2.0)
+    ax3[:set_ylim](0.0, 1e4)
 
     fig[:subplots_adjust](hspace = 1.0)
 
     init() = begin
         global line1
         global line2
+        global line3
+        global lineHammer
         global time
-        line1[:set_ydata](fill(NaN, si.Nx))
-        line2[:set_ydata](fill(NaN, 1000))
+        line1[:set_ydata](fill(NaN, si.Nₓ))
+        line2[:set_ydata](fill(NaN, forceSize))
+        line3[:set_ydata](fill(NaN, fftOutSize))
+        lineHammer[:set_ydata](fill(NaN, si.Nₓ))
         time[:set_text]("")
-        return (line1, line2, time)
+        return (line1, line2, line3, lineHammer, time)
     end
+
+    hammerPos = Int(round(h.x / s.length * si.Nₓ))
 
     animate(i) = begin
         global line1
         global line2
+        global line3
+        global lineHammer
         global time
-        for j in 1:1
-            (yn, f) = Integrate!(si, yn, false)
-            fy[(si.t % 1000) + 1] = f
+        global timeDomain
+        for j in 1:10
+            scaledHammer = (0.001 .* hammer .+ (h.y - 0.001))
+            Fh::Array{Float64,1} = Interact(h, scaledHammer, s, yⁿ)
+            Fh[1:hammerPos-5] .= 0.0
+            Fh[hammerPos+5:end] .= 0.0
+            (yⁿ, f) = Integrate!(si, yⁿ, Fh, hammer, true)
+
+            # Integrate!(hi, -(Fh[hammerPos]))
+            Fy[(si.tₙ % forceSize) + 1] = f
+
+            popfirst!(timeDomain)
+            push!(timeDomain, f)
         end
-        line1[:set_ydata](yn)
-        time[:set_text](@sprintf("time = %.6f", si.t * dt))
-        line2[:set_ydata](fy)
-        return (line1, line2, time)
+        line1[:set_ydata](yⁿ)
+        # counter += 1
+        time[:set_text](@sprintf("time = %.6f", si.tₙ * Δt))
+        line2[:set_ydata](Fy)
+        fftOut = fftPlan * timeDomain
+        line3[:set_ydata](abs.(fftOut))
+        next_hammer = hammer_display .+ h.y
+        lineHammer[:set_ydata](next_hammer)
+
+        return (line1, line2, line3, lineHammer, time)
     end
 
-    # anim.FuncAnimation(fig, animate, init_func=init, interval=2, blit=true, frames=100)
-    # show()
 
     generateWAV() = begin
-        out::Array{Float64,1} = zeros(882000)
-        for i in 1:882000
-            (yn, f) = Integrate!(si, yn, true)
-            out[i] = f
+        outSize = Int(round(fs * 8))
+        out::Array{Float64,1} = zeros(outSize)
+        Juno.progress(name="calculating") do p
+            for i in 1:outSize
+                scaledHammer = (0.001 .* hammer .+ (h.y - 0.001))
+                Fh::Array{Float64,1} = Interact(h, scaledHammer, s, yⁿ)
+                Fh[1:hammerPos-1] .= 0.0
+                Fh[hammerPos+1:end] .= 0.0
+                (yⁿ, f) = Integrate!(si, yⁿ, Fh, hammer, true)
+
+                Integrate!(hi, -(Fh[hammerPos]))
+                out[i] = f / 20.0
+                if i % 1000 == 0
+                    @info "calculating" progress = i / outSize _id = p
+                end
+            end
+            println(44100.0 / fs)
+            resampled = resample(out, 44100.0 / fs)
+            wavwrite(resampled, "out_round.wav", Fs = 44100)
         end
-        wavwrite(out, "out.wav", Fs = 44100)
     end
 
     if generate == true
@@ -174,3 +166,5 @@ main(generate = false) = begin
 end
 
 main(false)
+
+end
