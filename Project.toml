@@ -1,0 +1,17 @@
+name = "Waves"
+uuid = "8f9e4ac2-a009-45ca-b121-e2d89091c775"
+version = "0.0.1"
+author = ["Sean Chen <kamiyo@gmail.com>"]
+
+[deps]
+DSP = "717857b8-e6f2-59f4-9121-6e50c889abd2"
+DifferentialEquations = "0c46a032-eb83-5123-abaf-570d42b7fbaa"
+Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
+FFTW = "7a1cc6ca-52ef-59f5-83cd-3a7055c09341"
+Juno = "e5e0dc1b-0480-54bc-9374-aad01c23163d"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
+PyCall = "438e738f-606a-5dbb-bf0a-cddfbfd45ab0"
+PyPlot = "d330b81b-6aea-500a-939a-2ce795aea3ee"
+SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
+WAV = "8149f6b0-98f6-5db9-b78f-408fbbb8ef88"
