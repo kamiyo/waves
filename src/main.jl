@@ -5,94 +5,98 @@ using PyCall
 using LinearAlgebra
 using Printf
 using WAV
-using DifferentialEquations
-using RecursiveArrayTools
 using Distributions
 using FFTW
 using DSP
 using Juno
+using Unitful
 
 include("StringObject.jl")
 include("Integrator.jl")
-@pyimport matplotlib.animation as anim
+anim = pyimport("matplotlib.animation")
 pygui(true)
 
 main(generate = false) = begin
     FFTW.set_num_threads(4)
 
-    ρ::Float64 = 7850.0
-    # fs::Float64 = 44100.0
-    length::Float64 = 0.665
-    Δx::Float64 = length / 500
-    Z_bridge::Float64 = 1000.0
-    Ε::Float64 = 2e11
-    s::Str = Str(length, ρ, 750.0, 0.001, Ε, Z_bridge)
-    cl::Float64 = sqrt(s.cl²)
-    Δt::Float64 = 0.05 * Δx / sqrt(s.c²)
-    println(Δt / (Δx / cl))
-    # Qt::Int = ceil(Δt / (Δx / cl))
-    Qt::Int = 3
-    println(Qt)
-    Δtl::Float64 = Δt / Qt
-    # Δtl::Float64 = Δt
-    fs::Float64 = 1.0 / Δt
-    df::DragForce = DragForce(1.2, 0.5)
-    # si::StrIntegrator = StrIntegrator(s, df, Δt, Δx)
-    si::StrIntegrator = StrIntegrator(s, df, Δt, Δx, Δtl, Qt)
-    # si::StrIntegratorHighAcc = StrIntegratorHighAcc(s, df, Δt, Δx)
+    density = 7850.0u"kg/m^3"
+    length = 0.665u"m"
+    Δx = length / 500
+    impedance = 1000.0u"kg/s"
+    youngs = 2e11u"Pa"
+    tension=760.0u"N"
+    diameter=0.001u"m"
+    s::Str = Str(length, density, tension, diameter, youngs, impedance)
 
-    h::Hammer = Hammer(0.008274, 0.01, 2.5, 5e9, 6.1 / 7.0 * s.length, -0.001, 2.5)
-    hi::HammerIntegrator = HammerIntegrator(0, h, Δt, 0.0)
+    c_long = sqrt(s.c_long²)
+    Δt_trans = 0.2 * Δx / sqrt(s.c_trans²)
+
+    Qₜ::Int = ceil(Δx / sqrt(s.c_trans²) / (Δx / c_long))
+    Δt_long = Δt_trans / Qₜ
+    fs::typeof(1.0u"Hz") = 1.0 / Δt_trans
+
+    df::DragForce = DragForce(1.2u"kg/m^3", 0.5)
+    si::StrIntegrator = StrIntegrator(s, df, Δt_trans, Δt_long, Δx, Qₜ)
+
+    h::Hammer = Hammer(0.008274u"kg", 0.01u"m", 2.5, 5e9u"N/m^(5/2)", 6.1 / 7.0 * s.length, -0.005u"m", 4.0u"m/s")
+    hi::HammerIntegrator = HammerIntegrator(0, h, Δt_trans, 0.0u"m/s^2")
 
     # yⁿ::Array{Float64,1} = [0.0004 * sin((i - 1) * pi / (si.Nₓ - 1)) + 0.0002 * sin(5 * (i - 1) * pi / (si.Nₓ - 1)) for i = 1:si.Nₓ]
-    yⁿ = GeneratePluck(0.85, 0.01, si.Nₓ, 0.0)
+    # yⁿ = GeneratePluck(0.85, 0.01u"m", si.Nₓ, 0.0u"m")
     zⁿ = zeros(si.Nₓ)
-    wⁿ = zeros(si.Nₓ)
+    # yⁿ = zeros(typeof(1.0u"m"), si.Nₓ)
+    wⁿ = zeros(typeof(1.0u"m"), si.Nₓ)
+
     # wⁿ[2:10] .= -Δx / 2
-    # yⁿ = [sin(pi / 180) * s.length * (1 - i / (si.Nₓ-1)) for i = 0:si.Nₓ-1]
+    yⁿ = [sin(pi / 180) * s.length * (1 - i / (si.Nₓ-1)) for i = 0:si.Nₓ-1]
     # yⁿ::Array{Float64,1} = zeros(si.Nₓ)
 
-    stdev::Float64 = h.width / (2 * √(2 * log(2)))
+    stdev = ustrip(uconvert(u"m", h.width)) / (2 * √(2 * log(2)))
     # println(stdev)
-    dist = Normal(h.x, stdev)
-    left = cdf(dist, h.x - 0.005)
-    right = cdf(dist, h.x + 0.005)
+    unitless_hammer_x = ustrip(uconvert(u"m", h.x))
+    dist = Normal(unitless_hammer_x, stdev)
+    left = cdf(dist, unitless_hammer_x - 0.005)
+    right = cdf(dist, unitless_hammer_x + 0.005)
     massUnderFW = right - left
 
     # dist = Uniform(h.x - 0.005, h.x + 0.005)
     hammerPos = Int(round(h.x / s.length * si.Nₓ))
 
-    x::Array{Float64,1} = range(0, step = Δx, length = si.Nₓ)
-    scale = pdf(dist, h.x)
+    x = range(0.0u"m", step = Δx, length = si.Nₓ)
+    scale = pdf(dist, unitless_hammer_x)
     hammer_x = x[hammerPos-5:hammerPos+5]
-    hammer_display = [0.001 * (pdf(dist, i) / scale - 1.0) for i in hammer_x]
-    hammer = [pdf(dist, i) / scale for i in x]
+    hammer_display = [0.001 * (pdf(dist, ustrip(uconvert(u"m", i))) / scale - 1.0)u"m" for i in hammer_x]
+    hammer = [pdf(dist, ustrip(uconvert(u"m", i)))u"m" / scale for i in x]
 
-    m::Array{Float64,1} = [h.mass * (cdf(dist, i + Δx) - cdf(dist, i)) for i in x]
+    using3D()
+    # m = [h.mass * (cdf(dist, ustrip(uconvert(u"m", i + Δx))) - cdf(dist, ustrip(uconvert(u"m", i)))) for i in x]
+    global fig = figure(figsize=(14, 10))
+    global ax1 = fig.add_subplot(2, 2, 1, projection="3d")
+    global ax4 = fig.add_subplot(2, 2, 2)
+    global ax2 = fig.add_subplot(2, 2, 3)
+    global ax3 = fig.add_subplot(2, 2, 4)
+    ax1.set_zlim3d(-0.01, 0.01)
+    global line1, = ax1.plot(ustrip.(x), zⁿ, ustrip.(yⁿ), "k-", zdir="y")
+    global lineHammer, = ax1.plot3D(ustrip.(hammer_x), zeros(size(hammer_x)), ustrip.(hammer_display), "-",)
+    ax1.set_title("String Contour")
+    ax1.set_xlabel("string shape (m)")
+    ax1.set_zlabel("height offset (m)")
+    global time = ax1.text2D(0.02, 0.8, "", transform = ax1.transAxes)
 
-    global (fig, (ax1, ax2, ax3)) = subplots(3, 1, figsize=(10, 10))
-    ax1[:set_ylim](-0.02, 0.02)
-    global line1, lineHammer = ax1[:plot](x .+ wⁿ, yⁿ, "k-", hammer_x, hammer_display, "-")
-    ax1[:set_title]("String Contour")
-    ax1[:set_xlabel]("string shape (m)")
-    ax1[:set_ylabel]("height offset (m)")
-    global time = ax1[:text](0.02, 0.8, "", transform = ax1[:transAxes])
-
-    global ax4 = ax1[:twinx]()
-    global lineLongitude, = ax4[:plot](x, wⁿ, "g-")
-    ax4[:set_ylabel]("Longitudinal Offset (m)")
-    ax4[:set_ylim](-0.005, 0.005)
+    global lineLongitude, = ax4.plot(ustrip.(x), ustrip.(wⁿ), "g-")
+    ax4.set_ylabel("Longitudinal Offset (m)")
+    ax4.set_ylim(-0.0005, 0.0005)
 
     forceSize::Int64 = 8192
 
-    Fx::Array{Float64,1} = range(0, stop = forceSize / fs, length = forceSize)
-    Fy::Array{Float64,1} = fill(NaN, forceSize)
-    global line2, = ax2[:plot](Fx, Fy)
-    ax2[:set_title]("Force on bridge")
-    ax2[:set_xlabel]("time (s)")
-    ax2[:set_ylabel]("force (N)")
-    ax2[:set_ylim](-25.0, 25.0)
-    ax2[:set_xlim](0.0, forceSize / fs)
+    Fx::Array{Float64,1} = range(0, stop = forceSize / ustrip(fs), length = forceSize)
+    Fy::Array{Float64,1} = fill(0, forceSize)
+    global line2, = ax2.plot(Fx, Fy)
+    ax2.set_title("Force on bridge")
+    ax2.set_xlabel("time (s)")
+    ax2.set_ylabel("force (N)")
+    ax2.set_ylim(-25.0, 25.0)
+    ax2.set_xlim(0.0, forceSize / ustrip(fs))
 
     fftInSize::Int64 = 16384
     fftOutSize::Int64 = 8193
@@ -100,16 +104,17 @@ main(generate = false) = begin
     global timeDomain = fill(0.0, fftInSize)
     fftPlan = FFTW.plan_rfft(timeDomain, flags=FFTW.UNALIGNED)
 
-    FreqX::Array{Float64,1} = range(0, stop = fs / 2.0, length = fftOutSize)
+    FreqX::Array{Float64,1} = range(0, stop = ustrip(fs) / 2.0, length = fftOutSize)
     FreqY::Array{Float64,1} = fftPlan * timeDomain
-    global line3, = ax3[:loglog](FreqX, FreqY)
-    ax3[:set_title]("Frequency Spectrum")
-    ax3[:set_xlabel]("Frequency (hz)")
-    ax3[:set_ylabel]("Magnitude")
-    ax3[:set_xlim](100, 8e3)
-    ax3[:set_ylim](0.0, 1e4)
+    global line3, = ax3.loglog(FreqX, FreqY)
+    ax3.set_title("Frequency Spectrum")
+    ax3.set_xlabel("Frequency (hz)")
+    ax3.set_ylabel("Magnitude")
+    ax3.set_xlim(100, 8e3)
+    ax3.set_ylim(1, 1e5)
 
-    fig[:subplots_adjust](hspace = 1.0)
+    fig.subplots_adjust(hspace = 0.5, wspace=0.5)
+
 
     init() = begin
         global line1
@@ -118,12 +123,13 @@ main(generate = false) = begin
         global lineLongitude
         global lineHammer
         global time
-        line1[:set_data](fill(NaN, si.Nₓ), fill(NaN, si.Nₓ))
-        line2[:set_ydata](fill(NaN, forceSize))
-        line3[:set_ydata](fill(NaN, fftOutSize))
-        lineLongitude[:set_data](fill(NaN, si.Nₓ), fill(NaN, si.Nₓ))
-        lineHammer[:set_ydata](fill(NaN, si.Nₓ))
-        time[:set_text]("")
+        line1.set_data(fill(NaN, si.Nₓ), fill(NaN, si.Nₓ))
+        line1.set_3d_properties(fill(NaN, si.Nₓ))
+        line2.set_ydata(fill(NaN, forceSize))
+        line3.set_ydata(fill(NaN, fftOutSize))
+        lineLongitude.set_data(fill(NaN, si.Nₓ), fill(NaN, si.Nₓ))
+        lineHammer.set_ydata(fill(NaN, si.Nₓ))
+        time.set_text("")
         return (line1, line2, line3, lineLongitude, lineHammer, time)
     end
 
@@ -135,58 +141,61 @@ main(generate = false) = begin
         global lineLongitude
         global time
         global timeDomain
-        for j in 1:1
-            scaledHammer = (0.0001 .* hammer .+ (h.y - 0.0001))
-            Fh::Array{Float64,1} = Interact(h, scaledHammer, s, yⁿ)
-            Fh[1:hammerPos-5] .= 0.0
-            Fh[hammerPos+5:end] .= 0.0
+        for j in 1:10
+            scaledHammer = (0.0001 .* hammer .+ (h.y - 0.0001u"m"))
+            Fh::NewtonArray = Interact(h, scaledHammer, s, yⁿ)
+            Fh[1:hammerPos-5] .= 0.0u"N"
+            Fh[hammerPos+5:end] .= 0.0u"N"
             (yⁿ, wⁿ, f) = Integrate!(si, yⁿ, wⁿ, Fh, hammer, true)
 
-            # Integrate!(hi, -sum(Fh[hammerPos-10:hammerPos+10]))
-            Fy[(si.tₙ % forceSize) + 1] = f
+            Integrate!(hi, -sum(Fh[hammerPos-10:hammerPos+10]))
+            Fy[(ustrip(si.t_trans) % forceSize) + 1] = ustrip(f)
 
             popfirst!(timeDomain)
-            push!(timeDomain, f)
+            push!(timeDomain, ustrip(f))
         end
-
         δy_δx = (si.δ * yⁿ) ./ si.Δx
         θⁿ = atan.(δy_δx)
         δy = wⁿ .* sin.(θⁿ)
         δx = wⁿ .* cos.(θⁿ)
 
-        line1[:set_data](x .+ δx, yⁿ .+ δy)
+        line1.set_data(ustrip.(x .+ δx), zⁿ)
+        line1.set_3d_properties(ustrip.(yⁿ .+ δy))
+        # line1.set_data(ustrip.(x), ustrip.(yⁿ))
         # counter += 1
-        time[:set_text](@sprintf("time = %.6f", si.tₙ * Δt))
-        line2[:set_ydata](Fy)
+        time.set_text(string("time = ", si.t_trans * si.Δt_trans))
+        line2.set_ydata(Fy)
         fftOut = fftPlan * timeDomain
-        line3[:set_ydata](abs.(fftOut))
+        line3.set_ydata(abs.(fftOut))
         next_hammer = hammer_display .+ h.y
-        lineHammer[:set_ydata](next_hammer)
-        lineLongitude[:set_data](x, wⁿ)
+        lineHammer.set_data(ustrip.(hammer_x), zeros(size(hammer_x)))
+        lineHammer.set_3d_properties(ustrip.(next_hammer))
+        lineLongitude.set_data(ustrip.(x), ustrip.(wⁿ))
 
         return (line1, line2, line3, lineLongitude, lineHammer, time)
     end
 
 
     generateWAV() = begin
-        outSize = Int(round(fs * 8))
+        outSize = Int(round(ustrip(fs * 8)))
         out::Array{Float64,1} = zeros(outSize)
         Juno.progress(name="calculating") do p
             for i in 1:outSize
-                scaledHammer = (0.001 .* hammer .+ (h.y - 0.001))
-                Fh::Array{Float64,1} = Interact(h, scaledHammer, s, yⁿ)
-                Fh[1:hammerPos-5] .= 0.0
-                Fh[hammerPos+5:end] .= 0.0
-                (yⁿ, f) = Integrate!(si, yⁿ, Fh, hammer, true)
+                scaledHammer = (0.0001 .* hammer .+ (h.y - 0.0001u"m"))
+                Fh::NewtonArray = Interact(h, scaledHammer, s, yⁿ)
+                Fh[1:hammerPos-5] .= 0.0u"N"
+                Fh[hammerPos+5:end] .= 0.0u"N"
+                (yⁿ, wⁿ, f) = Integrate!(si, yⁿ, wⁿ, Fh, hammer, true)
 
-                # Integrate!(hi, -sum(Fh[hammerPos-10:hammerPos+10]))
-                out[i] = f / 20.0
+                Integrate!(hi, -sum(Fh[hammerPos-10:hammerPos+10]))
+
+                out[i] = ustrip(f / 20.0)
                 if i % 1000 == 0
                     @info "calculating" progress = i / outSize _id = p
                 end
             end
-            println(44100.0 / fs)
-            resampled = resample(out, 44100.0 / fs)
+            println(44100.0 / ustrip(fs))
+            resampled = resample(out, 44100.0 / ustrip(fs))
             wavwrite(resampled, "out_altered.wav", Fs = 44100)
         end
     end
