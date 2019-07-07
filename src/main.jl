@@ -106,7 +106,9 @@ main(generate = false) = begin
 
     FreqX::Array{Float64,1} = range(0, stop = ustrip(fs) / 2.0, length = fftOutSize)
     FreqY::Array{Float64,1} = fftPlan * timeDomain
-    global line3, = ax3.loglog(FreqX, FreqY)
+    global line3, = ax3.plot(FreqX, FreqY)
+    ax3.set_xscale("log")
+    ax3.set_yscale("symlog")
     ax3.set_title("Frequency Spectrum")
     ax3.set_xlabel("Frequency (hz)")
     ax3.set_ylabel("Magnitude")
@@ -149,7 +151,8 @@ main(generate = false) = begin
             (yⁿ, wⁿ, f) = Integrate!(si, yⁿ, wⁿ, Fh, hammer, true)
 
             Integrate!(hi, -sum(Fh[hammerPos-10:hammerPos+10]))
-            Fy[(ustrip(si.t_trans) % forceSize) + 1] = ustrip(f)
+            Fy = circshift(Fy, -1)
+            Fy[forceSize] = ustrip(f)
 
             popfirst!(timeDomain)
             push!(timeDomain, ustrip(f))
@@ -163,7 +166,7 @@ main(generate = false) = begin
         line1.set_3d_properties(ustrip.(yⁿ .+ δy))
         # line1.set_data(ustrip.(x), ustrip.(yⁿ))
         # counter += 1
-        time.set_text(string("time = ", si.t_trans * si.Δt_trans))
+        time.set_text(string("time = ", si.t_trans * si.Δt_trans, "\nt = ", si.t_trans))
         line2.set_ydata(Fy)
         fftOut = fftPlan * timeDomain
         line3.set_ydata(abs.(fftOut))
